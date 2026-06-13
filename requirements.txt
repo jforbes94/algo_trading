@@ -1,0 +1,10 @@
+alpaca-py
+pandas
+pandas-ta
+python-dotenv
+matplotlib
+jupyter
+pyarrow
+pandas-market-calendars
+lightgbm
+scikit-learn
