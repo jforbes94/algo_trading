@@ -45,12 +45,15 @@ backtest/
   backtester.py       — Dollar-based P&L: equity curve, Sharpe, drawdown, trade log
 
 scripts/
-  fetch_sp500.py      — Download/refresh full universe
-  backfill_history.py — Prepend older history to existing cache
+  fetch_sp500.py               — Download/refresh full universe
+  backfill_history.py          — Prepend older history to existing cache
   feature_correlation_report.py — IC/ICIR analysis PDF report
-  trade_report.py     — Standalone trade report PDF generator
-  sanity_check.py     — Data quality checks
-  run_pipeline.py     — End-to-end pipeline runner
+  feature_analysis.py          — Feature importance + distribution charts (all 55 features)
+  trade_report.py              — Standalone trade report PDF generator
+  plot_tree.py                 — Visualize a single LightGBM decision tree
+  sanity_check.py              — Data quality checks
+  run_pipeline.py              — End-to-end pipeline runner
+  analysis/                    — One-off research scripts (leakage diagnostics, shift validation, etc.)
 
 docs/
   ROADMAP.md          — Project roadmap and technical debt log

@@ -125,7 +125,7 @@ Model has real signal; cost structure and objective function are the primary bot
 ## Known Technical Debt
 
 - `_filter_market_hours()` is duplicated between `data/store.py` and `features/engineer.py` — should be moved to a shared `data/utils.py`
-- `scripts/` contains a mix of operational and one-off diagnostic scripts — could be split into `scripts/` (operational) and `analysis/` (research)
+- ~~`scripts/` contains a mix of operational and one-off diagnostic scripts~~ — resolved: one-off diagnostics moved to `scripts/analysis/`
 - `data/macro_fetcher.py` downloads full history on each refresh rather than incrementally appending — fast enough for daily data but inconsistent with `store.py` pattern
 - HY spread is a proxy (rolling vol of HYG−LQD returns) rather than true OAS bps — acceptable but less precise than FRED series
 - Short rate in `yield_curve` uses ^IRX (13-week T-bill) rather than 2-year Treasury (no free 2yr ticker on Yahoo Finance)

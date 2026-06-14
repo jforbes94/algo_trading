@@ -22,6 +22,7 @@ from strategy.signals import generate_signals
 from backtest.backtester import run, trade_log, trade_summary
 from data.store import load_etf_universe
 from data.universe import get_sector_map
+from data.macro_fetcher import load_all_daily
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG     = "#1e1e2e"
@@ -53,7 +54,10 @@ print("Loading data...")
 data_dict    = load_universe()
 etf_dict     = load_etf_universe()
 sector_map   = get_sector_map()
-features_df  = build_features(data_dict, etf_dict=etf_dict, sector_map=sector_map)
+print("Loading daily macro/earnings features...")
+daily_feats  = load_all_daily(list(data_dict.keys()), "2021-01-01", "2026-12-31")
+features_df  = build_features(data_dict, etf_dict=etf_dict, sector_map=sector_map,
+                              daily_features=daily_feats)
 
 print("Training model...")
 model  = WalkForwardModel(n_splits=4)
@@ -86,7 +90,7 @@ def style(ax, title="", xlabel="", ylabel=""):
     ax.grid(True, alpha=0.3)
 
 
-out_path = os.path.join(ROOT, "trade_report.pdf")
+out_path = os.path.join(ROOT, "outputs", "trade_report.pdf")
 with PdfPages(out_path) as pdf:
 
     # ═════════════════════════════════════════════════════════════════════════

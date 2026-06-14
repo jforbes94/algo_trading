@@ -15,14 +15,17 @@ import lightgbm as lgb
 from features.engineer import load_universe, build_features
 from data.store import load_etf_universe
 from data.universe import get_sector_map
+from data.macro_fetcher import load_all_daily
 
 # ── Train a small interpretable model ────────────────────────────────────────
-print("Loading data...")
+print("Loading data (20-stock sample for speed)...")
 data_dict = load_universe()
 data_dict = dict(list(data_dict.items())[:20])
 etf_dict = load_etf_universe()
 sector_map = get_sector_map()
-features_df = build_features(data_dict, etf_dict=etf_dict, sector_map=sector_map)
+daily_feats = load_all_daily(list(data_dict.keys()), "2021-01-01", "2026-12-31")
+features_df = build_features(data_dict, etf_dict=etf_dict, sector_map=sector_map,
+                             daily_features=daily_feats)
 
 feature_cols = [c for c in features_df.columns if c not in {"y", "forward_return"}]
 X = features_df[feature_cols].dropna()
@@ -145,6 +148,6 @@ ax.set_title(
     color="#cdd6f4", fontsize=11, pad=12
 )
 
-out_path = os.path.join(ROOT, "tree_plot.png")
+out_path = os.path.join(ROOT, "outputs", "tree_plot.png")
 plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
 print(f"Saved: {out_path}")
