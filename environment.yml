@@ -1,0 +1,36 @@
+name: algotrading
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    # Data
+    - alpaca-py
+    - yfinance
+    - pandas
+    - numpy
+    - pyarrow
+    - pandas-datareader
+
+    # ML
+    - lightgbm
+    - scikit-learn
+    - scipy
+
+    # Technical indicators
+    - pandas-ta
+
+    # Visualisation
+    - matplotlib
+
+    # Notebook
+    - jupyter
+    - ipykernel
+    - nbconvert
+
+    # Utilities
+    - python-dotenv
+    - requests
+    - tqdm
+    - python-graphviz

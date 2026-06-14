@@ -43,7 +43,7 @@ def load_universe(interval="1h") -> dict[str, pd.DataFrame]:
     return result
 
 
-def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = None) -> pd.DataFrame:
+def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = None, daily_features: pd.DataFrame = None) -> pd.DataFrame:
     frames = []
     for symbol, df in data_dict.items():
         f = pd.DataFrame(index=df.index)
@@ -80,6 +80,48 @@ def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = No
         # Above SMA20 flag (used to compute market breadth after concat)
         f["above_sma20"] = (df["close"] > df["sma_20"]).astype(float)
 
+        # ── Tier-2 features (per-ticker) ──
+
+        # 1. vol_vs_hour_avg: volume / stock's mean volume at this specific hour-of-day.
+        #    Controls for intraday U-shaped volume seasonality (open and close are busier).
+        #    Values > 1 = above-average activity for this time slot.
+        hour_of_day = df.index.hour
+        vol_hour_avg = df.groupby(hour_of_day)["volume"].transform("mean")
+        f["vol_vs_hour_avg"] = df["volume"] / vol_hour_avg.replace(0, np.nan)
+
+        # 2. ret_from_open: log return from first bar of the day to current bar.
+        #    First bar open is used as the intraday anchor (10am ET = 14:00 UTC).
+        #    Captures intraday momentum or mean-reversion vs. the opening price.
+        date_key = df.index.normalize()
+        day_open = df.groupby(date_key)["open"].transform("first")
+        f["ret_from_open"] = np.log(df["close"] / day_open.replace(0, np.nan))
+
+        # 3. body_ratio: |close - open| / (high - low). Near 1 = strong directional
+        #    bar; near 0 = indecisive doji-like bar.
+        hl_range = df["high"] - df["low"] + 1e-8
+        f["body_ratio"] = np.abs(df["close"] - df["open"]) / hl_range
+
+        # 4. upper_wick: (high - max(open,close)) / hl_range. Selling pressure at highs.
+        f["upper_wick"] = (df["high"] - np.maximum(df["open"], df["close"])) / hl_range
+
+        # 5. lower_wick: (min(open,close) - low) / hl_range. Buying pressure at lows.
+        f["lower_wick"] = (np.minimum(df["open"], df["close"]) - df["low"]) / hl_range
+
+        # 6. vol_direction: volume × sign(close - open), normalized by its own rolling
+        #    20-bar std so the series is scaled comparably across different price levels.
+        signed_vol = df["volume"] * np.sign(df["close"] - df["open"])
+        signed_vol_std = signed_vol.rolling(20).std().replace(0, np.nan)
+        f["vol_direction"] = signed_vol / signed_vol_std
+
+        # 10. vwap_dev_from_open: (vwap - open) / open.
+        #     How far has the average transaction price drifted from the day's open?
+        #     Positive = net buying pressure since open; negative = net selling.
+        f["vwap_dev_from_open"] = (df["vwap"] - df["open"]) / df["open"].replace(0, np.nan)
+
+        # Helper for cross-sectional intraday_range_rank (feature 8).
+        # Store (high - low) / close so it's available after concat.
+        f["_hl_frac"] = hl_range / df["close"].replace(0, np.nan)
+
         target_times = df.index + pd.Timedelta(hours=1)
         future_close = df["close"].reindex(target_times).values
         f["forward_return"] = future_close / df["close"].values - 1
@@ -100,6 +142,19 @@ def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = No
     for col in ["rsi", "ret_5d", "realized_vol", "vol_ratio"]:
         combined[f"{col}_rank"] = combined.groupby(level="datetime")[col].rank(pct=True)
 
+    # ── Tier-2 cross-sectional features ──
+
+    # 8. intraday_range_rank: cross-sectional percentile rank of (high-low)/close.
+    #    At each timestamp, which stocks are experiencing the widest price swings?
+    #    0 = narrowest range, 1 = widest range. Uses same pattern as existing _rank cols.
+    combined["intraday_range_rank"] = combined.groupby(level="datetime")["_hl_frac"].rank(pct=True)
+    combined.drop(columns=["_hl_frac"], inplace=True)
+
+    # 9. cs_return_dispersion: cross-sectional std of ret_1h at each timestamp.
+    #    Market-wide feature — same value for every stock at a given timestamp.
+    #    High dispersion = rich stock-picking environment; low = correlated tape.
+    combined["cs_return_dispersion"] = combined.groupby(level="datetime")["ret_1h"].transform("std")
+
     # Category 3: Cross-asset features (only if etf_dict and sector_map are provided)
     if etf_dict is not None and sector_map is not None:
         # Compute 1h and 4h log returns for all ETFs
@@ -110,6 +165,15 @@ def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = No
             etf_ret_4h[etf] = np.log(edf["close"] / edf["close"].shift(4))
         etf_ret_1h_df = pd.DataFrame(etf_ret_1h)   # index=datetime, columns=ETF tickers
         etf_ret_4h_df = pd.DataFrame(etf_ret_4h)
+
+        # Compute ret_from_open for each sector ETF (for feature 7)
+        etf_ret_from_open = {}
+        for etf, edf in etf_dict.items():
+            edf_filtered = _filter_market_hours(edf)
+            etf_date_key = edf_filtered.index.normalize()
+            etf_day_open = edf_filtered.groupby(etf_date_key)["open"].transform("first")
+            etf_ret_from_open[etf] = np.log(edf_filtered["close"] / etf_day_open.replace(0, np.nan))
+        etf_ret_from_open_df = pd.DataFrame(etf_ret_from_open)  # index=datetime, columns=ETF tickers
 
         # Reset index for merge operations
         combined_reset = combined.reset_index()
@@ -139,13 +203,57 @@ def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = No
         combined_reset["ret_1h_vs_sector"] = combined_reset["ret_1h"] - combined_reset["sector_ret_1h"]
         combined_reset["ret_4h_vs_sector"] = combined_reset["ret_4h"] - combined_reset["sector_ret_4h"]
 
+        # 7. ret_from_open_vs_sector: stock's intraday return from open minus its sector
+        #    ETF's intraday return from open. Isolates the idiosyncratic component of the
+        #    stock's intraday move, stripping out broad sector drift.
+        etf_long_rfo = etf_ret_from_open_df.stack().reset_index()
+        etf_long_rfo.columns = ["datetime", "sector_etf", "sector_ret_from_open"]
+        combined_reset = combined_reset.merge(etf_long_rfo, on=["datetime", "sector_etf"], how="left")
+        combined_reset["ret_from_open_vs_sector"] = (
+            combined_reset["ret_from_open"] - combined_reset["sector_ret_from_open"]
+        )
+
         # Drop helper columns, restore MultiIndex
-        drop_cols = ["sector_etf", "spy_ret_1h", "spy_ret_4h", "sector_ret_1h", "sector_ret_4h"]
+        drop_cols = [
+            "sector_etf", "spy_ret_1h", "spy_ret_4h",
+            "sector_ret_1h", "sector_ret_4h", "sector_ret_from_open",
+        ]
         combined_reset.drop(columns=[c for c in drop_cols if c in combined_reset.columns], inplace=True)
         combined = combined_reset.set_index(["datetime", "symbol"])
 
     medians = combined.groupby(level="datetime")["forward_return"].transform("median")
     combined["y"] = (combined["forward_return"] > medians).astype(int)
+
+    # ── Merge daily features (if provided) ────────────────────────────────────
+    if daily_features is not None:
+        # combined has MultiIndex (datetime[UTC-tz-aware], symbol).
+        # Normalise datetime to date, strip tz so it matches the daily index.
+        dt_level = combined.index.get_level_values("datetime")
+        dates_naive = dt_level.normalize().tz_localize(None)
+        sym_level = combined.index.get_level_values("symbol")
+
+        # Build a lookup key Series aligned to combined's integer positions.
+        lookup_keys = list(zip(dates_naive, sym_level))
+        lookup_idx = pd.MultiIndex.from_tuples(lookup_keys, names=["date", "symbol"])
+
+        # Ensure daily_features index is (date, symbol) with tz-naive dates.
+        df_daily = daily_features.copy()
+        df_daily.index = pd.MultiIndex.from_arrays(
+            [pd.to_datetime(df_daily.index.get_level_values(0)).tz_localize(None)
+             if df_daily.index.get_level_values(0).tz is not None
+             else pd.to_datetime(df_daily.index.get_level_values(0)),
+             df_daily.index.get_level_values(1)],
+            names=["date", "symbol"],
+        )
+
+        # Reindex daily_features to match each hourly row's (date, symbol) key.
+        daily_aligned = df_daily.reindex(lookup_idx)
+        daily_aligned.index = combined.index  # restore original MultiIndex
+
+        # Left-join: only add columns that don't already exist.
+        new_cols = [c for c in daily_aligned.columns if c not in combined.columns]
+        if new_cols:
+            combined = combined.join(daily_aligned[new_cols], how="left")
 
     return combined
 
