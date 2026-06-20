@@ -4,7 +4,7 @@
 **Universe**: ~500 stocks, 5 valid trade bars per day (10am–2pm ET)  
 **Target**: `forward_return` = 1-hour forward price return (time-aware; NaN when market is closed)  
 **Label**: `y` = 1 if `forward_return` > cross-sectional median at that timestamp, else 0  
-**Total features**: 38 (28 tier-1 + 10 tier-2)
+**Total features**: 55 (28 tier-1 hourly + 10 tier-2 hourly + 17 daily)
 
 ---
 
@@ -83,6 +83,49 @@
 | # | Feature | Formula | Signal Hypothesis | Notes |
 |---|---------|---------|-------------------|-------|
 | 38 | `ret_from_open_vs_sector` | `ret_from_open - sector_etf_ret_from_open` | Idiosyncratic intraday move stripping sector drift | Removes broad sector beta from intraday return |
+
+---
+
+## Daily Features (17) — from `data/macro_fetcher.py`
+
+Merged onto the hourly panel by date. All values are constant within a trading day (one value per calendar date, broadcast to every hourly bar on that date). Active in `backtest.ipynb` and all scripts.
+
+### Macro Regime (4)
+
+| # | Feature | Source | Signal Hypothesis |
+|---|---------|--------|-------------------|
+| 39 | `yield_10y` | ^TNX (Yahoo Finance) | Absolute rate level; rising rates = risk-off headwind |
+| 40 | `yield_curve` | ^TNX − ^IRX (10y − 13w T-bill) | Inversion signals recession risk; steep = expansion |
+| 41 | `hy_spread` | Rolling vol of HYG−LQD returns (proxy) | Credit stress; widens before equity drawdowns |
+| 42 | `short_rate` | ^IRX (13-week T-bill) | Fed policy rate proxy; fed-funds lower bound |
+
+### VIX Term Structure (4)
+
+| # | Feature | Source | Signal Hypothesis |
+|---|---------|--------|-------------------|
+| 43 | `vix_level` | ^VIX | Spot implied volatility; high = fear/risk-off |
+| 44 | `vix_3m` | ^VIX3M | 3-month implied vol; forward-looking uncertainty |
+| 45 | `vix_term_ratio` | ^VIX3M / ^VIX | > 1 = normal contango; < 1 = backwardation (stress) |
+| 46 | `vix_1d_chg` | VIX daily return | Momentum of fear; spike = regime shift signal |
+
+### Economic Calendar (4)
+
+| # | Feature | Definition | Signal Hypothesis |
+|---|---------|-----------|-------------------|
+| 47 | `fomc_day` | Binary flag: FOMC decision day | Elevated uncertainty; wider bid-ask, vol spike at announcement |
+| 48 | `nfp_day` | Binary flag: Non-Farm Payrolls day | First Friday of month; macro surprise risk |
+| 49 | `cpi_day` | Binary flag: CPI release day | Inflation surprise can shift rate expectations abruptly |
+| 50 | `macro_event_day` | OR of fomc_day, nfp_day, cpi_day | Any major macro event; useful as a single regime flag |
+
+### Earnings Proximity (5)
+
+| # | Feature | Definition | Signal Hypothesis |
+|---|---------|-----------|-------------------|
+| 51 | `days_to_earnings` | Calendar days until next earnings report | Pre-earnings drift and IV expansion |
+| 52 | `days_from_earnings` | Calendar days since last earnings report | Post-earnings drift; mean-reversion window |
+| 53 | `pre_earnings_5d` | Binary: within 5 days before earnings | Pre-earnings IV expansion and momentum |
+| 54 | `post_earnings_2d` | Binary: within 2 days after earnings | Post-earnings drift window; high-volatility continuation |
+| 55 | `earnings_week` | Binary: earnings within current 5-day window | Combined pre/post signal for the earnings week |
 
 ---
 

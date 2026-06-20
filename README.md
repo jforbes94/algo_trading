@@ -13,13 +13,14 @@ Trained walk-forward on 5 years of hourly OHLCV data. Paper trading via Alpaca.
 | Bar frequency | 1-hour |
 | Trading hours | 10am–2pm ET (5 valid entry bars/day) |
 | Holding period | 1 hour |
-| Positions | Top-N stocks by model probability |
+| Positions | Top-N stocks by model probability; held positions kept until rank drops below HOLD_RANK=25 |
+| Position sizing | Kelly-proportional: weight ∝ (2×proba − 1), normalized across portfolio |
 | Signal | LightGBM cross-sectional rank of P(outperform median) |
-| Cost model | 2 bps per position (roundtrip) |
+| Cost model | 2 bps per position (roundtrip), charged only on entries/exits (rebalancing model) |
 | Target | 1h forward return vs cross-sectional median |
 
-**Current gross alpha**: ~+$88.5k over 5 years on $100k capital before costs.
-Transaction costs remain the binding constraint at 2 bps/position.
+**Current gross alpha**: ~+$88.5k over 5 years on $100k capital before costs (pre-rebalancing run).
+The rebalancing cost model, hold band, and Kelly sizing have since been implemented — see Current Performance section for context.
 
 ---
 
@@ -162,26 +163,44 @@ Per-position cost deducted from each stock's return. Dollar P&L reported per tra
 
 ## Current Performance (2021–2026)
 
+> **Note**: The numbers below are from the pre-rebalancing run (full-turnover cost model,
+> equal-weight sizing, no hold band). They predate the rebalancing cost model (`rebalance=True`),
+> hold band (`HOLD_RANK=25`), and Kelly sizing (`KELLY=True`) that have since been implemented.
+> A fresh benchmark has not yet been run. The new cost model is expected to reduce the $97.6k
+> cost drag significantly by charging only on entries and exits, not on held positions.
+
 ```
 Capital         : $100,000
 Final Value     : $90,921
 Total P&L       : -$9,079  (-9.1%)
 Gross P&L       : +$88,537  (before costs)
-Total Costs     : $97,617
+Total Costs     : $97,617   [full-turnover model — no longer how costs are calculated]
 Sharpe          : -0.055
 Max Drawdown    : -$24,828  (-22.8%)
 Win Rate        : 50.46%
 ```
 
-The model has genuine gross alpha. Transaction costs at 2 bps/position are the
-primary drag. See [docs/ROADMAP.md](docs/ROADMAP.md) for the improvement plan.
+The model has genuine gross alpha. The old full-turnover cost model consumed all of it.
+The rebalancing model eliminates cost on held positions; see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
 ## Methodology Notes
 
 The current model is a binary classifier (beats median → 1, doesn't → 0).
-The methodology review identified three priority improvements:
+
+**Implemented backtest improvements** (active in `backtester.py`):
+
+- **Rebalancing cost model** (`rebalance=True`): transaction cost is charged only when a position
+  enters or exits the top-N portfolio. Held positions carry no cost. Eliminated the 126% annual
+  cost drag of the prior full-turnover model.
+- **Hold band** (`HOLD_RANK=25`): a position is only sold when its rank falls below 25 (not just
+  below TOP_N=5). Reduces unnecessary turnover when a stock slips from e.g. rank 3 to rank 8
+  but the model still likes it.
+- **Kelly sizing** (`KELLY=True`): position weight is proportional to model edge `(2×proba − 1)`,
+  normalized across the portfolio. High-conviction picks receive more capital than equal-weight.
+
+**Next methodology improvements** (not yet implemented):
 
 1. **Quintile labels** (0–4) instead of binary — 4× more signal resolution
 2. **Walk-forward embargo** — 5-bar gap at fold boundaries to remove rolling-feature leakage

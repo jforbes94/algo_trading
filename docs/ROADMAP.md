@@ -24,7 +24,7 @@
 - [x] **Tier 2 — 10 features**: intraday-hour-normalized volume, return from open,
       candlestick body/wick ratios, signed volume direction, VWAP drift from open,
       intraday range rank, cross-sectional return dispersion, sector-relative open return
-- [x] **Daily features — 17 features** (merged from macro_fetcher):
+- [x] **Daily features — 17 features** (merged from macro_fetcher, now active in notebook and all scripts):
       yield_10y, yield_curve, hy_spread, vix_level, vix_3m, vix_term_ratio, vix_1d_chg,
       fomc_day, nfp_day, cpi_day, macro_event_day,
       days_to_earnings, days_from_earnings, pre_earnings_5d, post_earnings_2d, earnings_week
@@ -53,6 +53,10 @@
 
 ## Current Results (2021–2026, 5 years, top-5 positions, 1h hold, 2 bps/pos)
 
+> **These numbers are pre-rebalancing** (full-turnover cost model, equal-weight sizing, no hold band).
+> The rebalancing cost model (`rebalance=True`), hold band (`HOLD_RANK=25`), and Kelly sizing
+> (`KELLY=True`) have since been implemented. A fresh benchmark has not yet been run.
+
 | Metric | Tier-1 only | + Tier-2 features |
 |--------|------------|-------------------|
 | Win Rate | 50.04% | 50.46% |
@@ -61,8 +65,9 @@
 | Gross P&L (pre-cost) | +$54k | +$88.5k |
 | Max Drawdown | −$41,957 | −$24,828 |
 
-**Key finding**: Gross alpha exists (+$88.5k over 5 years); transaction costs ($97.6k) consume it.
-Model has real signal; cost structure and objective function are the primary bottlenecks.
+**Key finding**: Gross alpha exists (+$88.5k over 5 years); under the old full-turnover model,
+transaction costs ($97.6k) consumed all of it. The rebalancing model is expected to reduce
+cost drag significantly by charging only on entries and exits, not held positions.
 
 ---
 
@@ -85,6 +90,17 @@ Model has real signal; cost structure and objective function are the primary bot
    cross-sectional ordering directly.
 
 ### Priority 2 — Signal exploration
+
+- [x] **Rebalancing cost model** (`rebalance=True` in `backtester.py`) — transaction cost charged
+      only on entries and exits; held positions carry no cost. Eliminated ~126% annual cost drag
+      of the prior full-turnover model.
+
+- [x] **Hold band** (`HOLD_RANK=25` in `backtester.py`) — a held position is only sold when its
+      rank falls below 25, not just below TOP_N=5. Reduces unnecessary turnover when a stock
+      slips slightly in rank but the model still rates it highly.
+
+- [x] **Kelly position sizing** (`KELLY=True` in `backtester.py`) — position weight proportional
+      to model edge `(2×proba − 1)`, normalized across the portfolio. Replaces equal-weight.
 
 5. **Ridge regression baseline** — 2-line change. If Ridge matches LightGBM, tree complexity
    is wasted on noise and the signal is linear.
