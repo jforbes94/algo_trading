@@ -3,14 +3,16 @@ import pandas as pd
 
 
 def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
-        capital: float = 100_000.0, rebalance: bool = False) -> dict:
+        capital: float = 100_000.0, rebalance: bool = False,
+        hold_rank: int = None, kelly: bool = False) -> dict:
     """
     capital:        starting portfolio value in dollars.
     holding_period: bars between rebalances (ignored when rebalance=True).
     cost_bps:       roundtrip bid-ask spread per position in basis points.
-    rebalance:      if True, only pay cost on positions that enter or exit the
-                    portfolio each bar.  Holds incur zero cost.
-                    if False (original), pay cost_bps on every position every bar.
+    rebalance:      only pay cost when positions enter/exit; holds are free.
+    hold_rank:      (requires rebalance=True) keep a held position until its rank
+                    exceeds this threshold, reducing unnecessary turnover.
+    kelly:          size positions by model edge (2*proba−1) rather than equal weight.
     """
     timestamps = signals.index.get_level_values(0).unique().sort_values()
     if not rebalance:
@@ -18,6 +20,7 @@ def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
 
     portfolio_value = capital
     active_set: set = set()
+    active_weights: dict = {}
     period_records = []
 
     for ts in timestamps:
@@ -26,24 +29,47 @@ def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
         if len(longs) == 0:
             if rebalance:
                 active_set = set()
+                active_weights = {}
             continue
 
-        target_set = set(longs.index)
-        n_pos = len(longs)
-        position_size = portfolio_value / n_pos
-        period_gross_ret = longs["forward_return"].mean()
+        # Build target portfolio: top-N entries + hold-band retentions
+        if hold_rank is not None and rebalance:
+            in_band = set(ts_data[ts_data["rank"] <= hold_rank].index)
+            still_held = (active_set & in_band) & set(ts_data.index)
+            target_set = still_held | set(longs.index)
+            target_data = ts_data.loc[sorted(target_set)]
+        else:
+            target_set = set(longs.index)
+            target_data = longs
+
+        n_pos = len(target_set)
+
+        # Position weights: Kelly (edge-proportional) or equal
+        if kelly:
+            edges = (2.0 * target_data["proba"] - 1.0).clip(lower=1e-6)
+            weights = edges / edges.sum()
+        else:
+            weights = pd.Series(1.0 / n_pos, index=target_data.index)
+
+        period_gross_ret = float((target_data["forward_return"] * weights).sum())
 
         if rebalance:
             entering = target_set - active_set
             exiting  = active_set - target_set
             n_prev   = len(active_set)
-            # Half-cost on each leg: exits paid when leaving, entries when entering.
-            # Portfolio fraction: exiting positions were 1/n_prev each;
-            # entering positions are 1/n_pos each.
-            exit_cost  = (len(exiting)  / n_prev  * (cost_bps / 2)) if n_prev  > 0 else 0.0
-            entry_cost = (len(entering) / n_pos   * (cost_bps / 2)) if n_pos   > 0 else 0.0
-            period_cost = (exit_cost + entry_cost) / 10_000
-            active_set = target_set
+
+            # Cost proportional to each position's portfolio weight
+            exit_cost  = sum(
+                active_weights.get(s, 1.0 / max(n_prev, 1)) * (cost_bps / 2)
+                for s in exiting
+            ) / 10_000
+            entry_cost = float(
+                weights.reindex(list(entering)).sum() * (cost_bps / 2)
+            ) / 10_000
+            period_cost = exit_cost + entry_cost
+
+            active_set     = target_set
+            active_weights = dict(zip(weights.index, weights.values))
         else:
             period_cost = cost_bps / 10_000
 
@@ -55,7 +81,6 @@ def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
         period_records.append({
             "timestamp":       ts,
             "n_positions":     n_pos,
-            "position_size":   round(position_size, 2),
             "gross_return":    period_gross_ret,
             "net_return":      period_net_ret,
             "dollar_pnl":      round(dollar_pnl, 2),
@@ -74,7 +99,6 @@ def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
     total_return     = total_dollar_pnl / capital
 
     n = len(periods_df)
-    # Annualisation: 5 valid entry bars/day (10am–2pm ET) at 1h holding
     periods_per_year = 252 * 5 if rebalance else 252 * (6 - holding_period)
     net_rets = periods_df["net_return"]
     sharpe = float(net_rets.mean() / net_rets.std() * np.sqrt(periods_per_year)) \
@@ -101,17 +125,21 @@ def run(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
         "cost_bps":           cost_bps,
         "total_cost_dollars": round(periods_df["dollar_cost"].sum(), 2),
         "rebalance":          rebalance,
+        "hold_rank":          hold_rank,
+        "kelly":              kelly,
     }
 
 
 def trade_log(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 2.0,
               capital: float = 100_000.0, sector_map: dict = None,
-              rebalance: bool = False) -> pd.DataFrame:
+              rebalance: bool = False, hold_rank: int = None,
+              kelly: bool = False) -> pd.DataFrame:
     """One row per (bar × long position).
 
-    rebalance=False (original): cost_bps charged on every position every bar.
-    rebalance=True:             cost_bps charged only on new entries; holds are
-                                free.  is_new_entry column flags the entry bar.
+    rebalance=False: cost_bps charged on every position every bar.
+    rebalance=True:  cost_bps charged only on new entries; holds are free.
+    hold_rank:       keep held positions until rank > hold_rank.
+    kelly:           position weight ∝ model edge (2*proba−1).
     """
     timestamps = signals.index.get_level_values(0).unique().sort_values()
     if not rebalance:
@@ -119,6 +147,7 @@ def trade_log(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 
 
     portfolio_value = capital
     active_set: set = set()
+    active_weights: dict = {}
     rows = []
 
     for ts in timestamps:
@@ -127,51 +156,75 @@ def trade_log(signals: pd.DataFrame, holding_period: int = 1, cost_bps: float = 
         if len(longs) == 0:
             if rebalance:
                 active_set = set()
+                active_weights = {}
             continue
 
-        target_set = set(longs.index)
-        n_pos = len(longs)
-        position_size = portfolio_value / n_pos
+        if hold_rank is not None and rebalance:
+            in_band = set(ts_data[ts_data["rank"] <= hold_rank].index)
+            still_held = (active_set & in_band) & set(ts_data.index)
+            target_set = still_held | set(longs.index)
+            target_data = ts_data.loc[sorted(target_set)]
+        else:
+            target_set = set(longs.index)
+            target_data = longs
+
+        n_pos = len(target_set)
+
+        if kelly:
+            edges = (2.0 * target_data["proba"] - 1.0).clip(lower=1e-6)
+            weights = edges / edges.sum()
+        else:
+            weights = pd.Series(1.0 / n_pos, index=target_data.index)
 
         if rebalance:
             entering = target_set - active_set
             exiting  = active_set - target_set
             n_prev   = len(active_set)
-            exit_cost  = (len(exiting)  / n_prev * (cost_bps / 2)) if n_prev > 0 else 0.0
-            entry_cost = (len(entering) / n_pos  * (cost_bps / 2)) if n_pos  > 0 else 0.0
-            period_cost = (exit_cost + entry_cost) / 10_000
+            exit_cost  = sum(
+                active_weights.get(s, 1.0 / max(n_prev, 1)) * (cost_bps / 2)
+                for s in exiting
+            ) / 10_000
+            entry_cost = float(
+                weights.reindex(list(entering)).sum() * (cost_bps / 2)
+            ) / 10_000
+            period_cost = exit_cost + entry_cost
         else:
             entering = target_set
             period_cost = cost_bps / 10_000
 
-        period_net = longs["forward_return"].mean() - period_cost
+        period_gross_ret = float((target_data["forward_return"] * weights).sum())
+        period_net = period_gross_ret - period_cost
+
+        # Capture position sizes at start of period (before NAV update)
+        pos_sizes = {sym: portfolio_value * float(weights[sym]) for sym in target_set}
         portfolio_value *= (1 + period_net)
 
-        for symbol, row in longs.iterrows():
-            gross_ret  = float(row["forward_return"])
-            is_new     = symbol in entering
-            # Per-position cost: new entries carry the full roundtrip;
-            # continuing holds are free (cost already included in period_cost
-            # at the portfolio level via the exit/entry turnover formula).
-            pos_cost   = (cost_bps / 10_000) if is_new else 0.0
-            net_ret    = gross_ret - pos_cost
+        for symbol, row in target_data.iterrows():
+            gross_ret = float(row["forward_return"])
+            w         = float(weights[symbol])
+            pos_size  = pos_sizes[symbol]
+            is_new    = symbol in entering
+            pos_cost  = (cost_bps / 10_000) if is_new else 0.0
+            net_ret   = gross_ret - pos_cost
             rows.append({
                 "entry_time":    ts,
                 "symbol":        symbol,
                 "sector":        sector_map.get(symbol, "Unknown") if sector_map else "Unknown",
                 "rank":          int(row["rank"]),
                 "proba":         round(float(row["proba"]), 4),
-                "position_size": round(position_size, 2),
+                "weight":        round(w, 4),
+                "position_size": round(pos_size, 2),
                 "gross_return":  round(gross_ret, 6),
                 "cost_bps":      cost_bps if is_new else 0.0,
                 "net_return":    round(net_ret, 6),
-                "dollar_pnl":    round(position_size * net_ret, 2),
+                "dollar_pnl":    round(pos_size * net_ret, 2),
                 "win":           net_ret > 0,
                 "is_new_entry":  is_new,
             })
 
         if rebalance:
-            active_set = target_set
+            active_set     = target_set
+            active_weights = dict(zip(weights.index, weights.values))
 
     return pd.DataFrame(rows)
 
@@ -199,7 +252,17 @@ def trade_summary(log: pd.DataFrame) -> pd.DataFrame:
 def print_summary(results: dict) -> None:
     c = results["capital"]
     f = results["final_value"]
-    mode = "rebalance" if results.get("rebalance") else f"hold {results['holding_period']}h"
+    parts = []
+    if results.get("rebalance"):
+        parts.append("rebalance")
+    else:
+        parts.append(f"hold {results['holding_period']}h")
+    if results.get("hold_rank"):
+        parts.append(f"hold_band≤{results['hold_rank']}")
+    if results.get("kelly"):
+        parts.append("kelly")
+    mode = " | ".join(parts)
+
     print(f"Mode               : {mode}")
     print(f"Starting Capital   : ${c:>12,.2f}")
     print(f"Final Value        : ${f:>12,.2f}")
