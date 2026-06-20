@@ -65,8 +65,8 @@ proba  = model.fit_predict(features_df)
 
 print("Generating signals...")
 signals = generate_signals(proba, features_df, top_n=20, bottom_n=20)
-results = run(signals, holding_period=4, cost_bps=5.0)
-log     = trade_log(signals, holding_period=4, cost_bps=5.0, sector_map=sector_map)
+results = run(signals, cost_bps=2.0, rebalance=True)
+log     = trade_log(signals, cost_bps=2.0, sector_map=sector_map, rebalance=True)
 summary = trade_summary(log)
 
 eq        = results["equity_curve"]
@@ -305,9 +305,9 @@ with PdfPages(out_path) as pdf:
     # -- Proba vs actual return scatter --------------------------------------
     ax_sc = fig.add_subplot(gs[1, :])
     sample = log.sample(min(5000, len(log)), random_state=42)
-    ax_sc.scatter(sample["proba"], sample["return"] * 100,
+    ax_sc.scatter(sample["proba"], sample["gross_return"] * 100,
                   alpha=0.15, s=8,
-                  c=[GREEN if r > 0 else RED for r in sample["return"]])
+                  c=[GREEN if r > 0 else RED for r in sample["gross_return"]])
     ax_sc.axhline(0, color=BORDER, lw=0.8)
     ax_sc.axvline(0.5, color=YELLOW, lw=0.8, linestyle="--")
     # Rolling mean line
@@ -315,7 +315,7 @@ with PdfPages(out_path) as pdf:
     roll_mean = sample_sorted["return"].rolling(200).mean() * 100
     ax_sc.plot(sample_sorted["proba"], roll_mean, color=BLUE, lw=2, label="Rolling mean")
     ax_sc.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f"{y:.1f}%"))
-    style(ax_sc, title="Model Probability vs Actual 4h Return (sample of 5,000 trades)",
+    style(ax_sc, title="Model Probability vs Actual 1h Return (sample of 5,000 trades)",
           xlabel="Model Probability", ylabel="Actual Return")
     ax_sc.legend(fontsize=8)
 
