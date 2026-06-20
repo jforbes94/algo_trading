@@ -16,7 +16,7 @@
   - Earnings proximity: days to/from earnings per stock (yfinance)
   - Cached to `data/cache/daily/`; auto-refreshes daily/weekly
 
-### Feature Engineering (38 features total)
+### Feature Engineering (55 features total)
 - [x] **Tier 1 — 28 features**: momentum (1h/4h/1d/5d), RSI, MACD, Bollinger, realized vol,
       VWAP deviation, volume ratio, candlestick range position, vol regime,
       RSI acceleration, overnight gap, market breadth, cross-sectional ranks,
@@ -29,19 +29,26 @@
       fomc_day, nfp_day, cpi_day, macro_event_day,
       days_to_earnings, days_from_earnings, pre_earnings_5d, post_earnings_2d, earnings_week
 - [x] Time-aware `forward_return`: index lookup at `t+1h` (not positional shift)
-- [x] Cross-sectional label: `y = 1` if stock beats median return at that timestamp
+- [x] **Quintile label**: `y ∈ {0,1,2,3,4}` within-timestamp quintile rank of forward return.
+      Replaced binary beat-median label. Model now optimizes for genuine outperformers,
+      not median crossers. (`features/engineer.py`)
 - [x] Feature correlation report (`scripts/feature_correlation_report.py`):
       IC, ICIR, Pearson/Spearman, year-by-year heatmap, redundancy matrix
 
 ### Model & Backtest
 - [x] Walk-forward LightGBM (4 folds, out-of-sample predictions only)
-- [x] Signal generation: top-N per timestamp by model probability
+- [x] **Switched to `LGBMRegressor`** (`objective="regression"`) — predicts quintile score
+      directly. Fold metric is now mean IC (Spearman rank correlation) not AUC.
+- [x] Signal generation: top-N per timestamp by model score
 - [x] Dollar-based backtester: equity curve, Sharpe, max drawdown, win rate
-- [x] Trade log with per-position dollar P&L, position sizing
+- [x] Trade log with per-position dollar P&L, Kelly weight, position sizing
 - [x] PDF trade report: 3-page visual (equity curve, rolling Sharpe, per-stock breakdown)
 - [x] Parameterized backtest notebook with labeled output folders
 - [x] Transaction costs: 2 bps per position (roundtrip)
 - [x] Correct annualization: `252 × (6 − holding_period)` periods/year
+- [x] **Rebalancing cost model** — charge cost only on entries/exits, not held positions
+- [x] **Hold band** (`HOLD_RANK=25`) — hold until rank drops below 25, not just below TOP_N
+- [x] **Kelly position sizing** — weight ∝ model edge `(2×score − 1)`, normalized per bar
 
 ### Diagnostics
 - [x] Statistical significance testing: win rate p-values, sample size analysis
@@ -51,11 +58,22 @@
 
 ---
 
-## Current Results (2021–2026, 5 years, top-5 positions, 1h hold, 2 bps/pos)
+## Current Results
 
-> **These numbers are pre-rebalancing** (full-turnover cost model, equal-weight sizing, no hold band).
-> The rebalancing cost model (`rebalance=True`), hold band (`HOLD_RANK=25`), and Kelly sizing
-> (`KELLY=True`) have since been implemented. A fresh benchmark has not yet been run.
+### Latest: 1-year out-of-sample (Sep 2025 – Jun 2026)
+Settings: `TOP_N=5`, `HOLD_RANK=25`, `KELLY=True`, `REBALANCE=True`, `COST_BPS=2.0`, quintile labels
+
+| Metric | Value |
+|--------|-------|
+| Net P&L | +$27,611 (+27.6%) |
+| Gross P&L | +$41,334 |
+| Total Costs | $13,723 (33% of gross) |
+| Win Rate | 50.6% |
+| Avg positions/bar | 6.6 (hold band active) |
+| Turnover rate | 61.3% of bars are new entries |
+| Top sector | XLK +$18k (65% of total profit) |
+
+### Historical baseline (2021–2026, pre-rebalancing, binary label, equal-weight)
 
 | Metric | Tier-1 only | + Tier-2 features |
 |--------|------------|-------------------|
@@ -63,66 +81,57 @@
 | Sharpe | −0.44 | −0.06 |
 | Total P&L | −$30,433 | −$9,079 |
 | Gross P&L (pre-cost) | +$54k | +$88.5k |
-| Max Drawdown | −$41,957 | −$24,828 |
+| Total Costs | $84k | $97.6k |
 
-**Key finding**: Gross alpha exists (+$88.5k over 5 years); under the old full-turnover model,
-transaction costs ($97.6k) consumed all of it. The rebalancing model is expected to reduce
-cost drag significantly by charging only on entries and exits, not held positions.
+**Key finding**: Binary label was the primary model flaw — the model couldn't distinguish
++4% outperformers from +0.02% median crossers. Quintile regression + rebalancing cost model
+eliminated the cost drag and dramatically improved signal quality.
 
 ---
 
 ## Next Up
 
-### Priority 1 — Model methodology (highest expected impact)
+### Priority 1 — Model improvements
 
-1. **Quintile labels** — replace binary `y` (beats median) with within-timestamp quintile rank
-   (0=bottom, 4=top). 4× the discriminative resolution. ~3 lines in `engineer.py`.
+1. **LambdaRank objective** (`rank_xendcg`) — the regression model predicts quintile scores
+   independently per stock. LambdaRank treats each timestamp as a query group and directly
+   optimizes the cross-sectional ranking. Requires passing `group` array to LightGBM.
+   Likely the single highest-impact remaining change.
 
-2. **Walk-forward embargo** — add 5-timestamp (~1 trading day) gap at each fold boundary.
-   Eliminates soft leakage from rolling features spanning the train/test split.
-   Diagnostic: if AUC drops after adding this, prior signal was boundary leakage.
+2. **Walk-forward embargo** — 5-bar gap at each fold boundary prevents rolling-feature leakage
+   across the train/test split. Diagnostic: if IC drops significantly, prior folds had leakage.
 
-3. **Increased regularization + early stopping** — `min_child_samples=200`, `reg_lambda=1.0`,
-   `learning_rate=0.02`, `n_estimators=500`, early stopping on held-out temporal slice.
+3. **Sector concentration risk** — XLK drove 65% of 1yr profits. The model needs either
+   sector-neutral position sizing (cap each sector's weight) or a sector exposure monitor.
 
-4. **LambdaRank objective** — switch from binary cross-entropy to `rank_xendcg`/`lambdarank`.
-   Model currently never sees the timestamp "query group"; LambdaRank optimizes
-   cross-sectional ordering directly.
+4. **Full 5-year benchmark** — run with current settings (`LABEL="5yr"`, `START_DATE=None`)
+   to get a statistically meaningful performance record vs the historical baseline.
 
-### Priority 2 — Signal exploration
+### Priority 2 — Signal quality
 
-- [x] **Rebalancing cost model** (`rebalance=True` in `backtester.py`) — transaction cost charged
-      only on entries and exits; held positions carry no cost. Eliminated ~126% annual cost drag
-      of the prior full-turnover model.
+5. **SHAP feature importance** — identify which of 55 features are actually driving the
+   quintile predictions and prune the bottom quartile per fold.
 
-- [x] **Hold band** (`HOLD_RANK=25` in `backtester.py`) — a held position is only sold when its
-      rank falls below 25, not just below TOP_N=5. Reduces unnecessary turnover when a stock
-      slips slightly in rank but the model still rates it highly.
+6. **Daily feature IC analysis** — run feature correlation report on the 17 daily features
+   specifically. Earnings proximity and VIX term structure are the most likely to have signal.
 
-- [x] **Kelly position sizing** (`KELLY=True` in `backtester.py`) — position weight proportional
-      to model edge `(2×proba − 1)`, normalized across the portfolio. Replaces equal-weight.
+7. **Ridge regression baseline** — if Ridge matches LightGBM IC, tree complexity is wasted
+   on noise and the signal is linear. 2-line change to validate.
 
-5. **Ridge regression baseline** — 2-line change. If Ridge matches LightGBM, tree complexity
-   is wasted on noise and the signal is linear.
-
-6. **Top-1 position sizing** — only trade the single highest-confidence pick per period.
-   Reduces costs dramatically; concentrates into the model's best guess.
-
-7. **Daily feature IC analysis** — run correlation report on the 17 new daily features to
-   confirm which earn positive IC (especially earnings proximity and VIX term structure).
+8. **Time-decay sample weights** — down-weight 2021–2022 observations. Market regime
+   in 2025–2026 likely differs significantly from COVID-era data.
 
 ### Priority 3 — Robustness
 
-8. **Hyperparameter search** with Optuna
-9. **SHAP-driven feature pruning** — drop bottom-quartile features per fold
+9. **Hyperparameter search** with Optuna (learning rate, num_leaves, min_child_samples)
 10. **Survivorship bias mitigation** — point-in-time S&P 500 constituent data
-11. **Time-decay sample weights** — down-weight 2021–2022 observations for 2025 regime
+11. **Sector-neutral position sizing** — cap each GICS sector to ≤40% of portfolio weight
 
 ### Priority 4 — Execution layer
 
-12. Alpaca order placement (paper trading)
+12. Alpaca order placement (paper trading live)
 13. Hourly scheduler: run pipeline on market open, rebalance each hour
-14. Risk management: position sizing, max drawdown circuit breaker
+14. Risk management: max drawdown circuit breaker, position size limits
 15. Live monitoring: equity curve dashboard, drawdown alerts
 
 ---

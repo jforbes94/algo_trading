@@ -221,8 +221,14 @@ def build_features(data_dict: dict, etf_dict: dict = None, sector_map: dict = No
         combined_reset.drop(columns=[c for c in drop_cols if c in combined_reset.columns], inplace=True)
         combined = combined_reset.set_index(["datetime", "symbol"])
 
-    medians = combined.groupby(level="datetime")["forward_return"].transform("median")
-    combined["y"] = (combined["forward_return"] > medians).astype(int)
+    # Quintile rank within each timestamp (0=bottom, 4=top).
+    # rank(method="first") before qcut guarantees unique bin edges even when
+    # many stocks share the same return value.
+    combined["y"] = (
+        combined.groupby(level="datetime")["forward_return"]
+        .transform(lambda x: pd.qcut(x.rank(method="first"), 5, labels=False))
+        .astype(float)
+    )
 
     # ── Merge daily features (if provided) ────────────────────────────────────
     if daily_features is not None:
