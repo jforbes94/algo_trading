@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from alpaca.data.requests import StockBarsRequest
 
-from data.fetcher import RAW_COLS, _parse_interval, _parse_period, add_indicators, fetch_raw, _get_client
+from data.fetcher import RAW_COLS, _parse_interval, _parse_period, add_indicators, fetch_raw, _get_client, _to_alpaca
 from data.universe import get_etf_list
 
 
@@ -59,8 +59,9 @@ def bulk_load(symbols: list[str], interval: str = "1h", period: str = "1y", batc
         print(f"Batch {bi}/{len(batches)} ({len(batch)} symbols)...", end=" ", flush=True)
         prev = len(saved)
         try:
+            alpaca_batch = [_to_alpaca(s) for s in batch]
             request = StockBarsRequest(
-                symbol_or_symbols=batch,
+                symbol_or_symbols=alpaca_batch,
                 timeframe=_parse_interval(interval),
                 start=start,
                 end=datetime.now(),
@@ -69,7 +70,8 @@ def bulk_load(symbols: list[str], interval: str = "1h", period: str = "1y", batc
 
             for sym in batch:
                 try:
-                    sym_df = df_all.loc[sym].copy() if isinstance(df_all.index, pd.MultiIndex) else df_all.copy()
+                    alpaca_sym = _to_alpaca(sym)
+                    sym_df = df_all.loc[alpaca_sym].copy() if isinstance(df_all.index, pd.MultiIndex) else df_all.copy()
                     sym_df.index = pd.to_datetime(sym_df.index)
                     sym_df.index.name = "datetime"
                     sym_df.columns = [c.lower() for c in sym_df.columns]
@@ -214,7 +216,7 @@ def bulk_backfill(symbols: list[str], interval: str = "1h", extra_period: str = 
 
         try:
             request = StockBarsRequest(
-                symbol_or_symbols=[r[0] for r in batch_with_ranges],
+                symbol_or_symbols=[_to_alpaca(r[0]) for r in batch_with_ranges],
                 timeframe=_parse_interval(interval),
                 start=global_start,
                 end=global_end,
@@ -223,7 +225,8 @@ def bulk_backfill(symbols: list[str], interval: str = "1h", extra_period: str = 
 
             for sym, existing, earliest, start_dt in batch_with_ranges:
                 try:
-                    sym_df = df_all.loc[sym].copy() if isinstance(df_all.index, pd.MultiIndex) else df_all.copy()
+                    alpaca_sym = _to_alpaca(sym)
+                    sym_df = df_all.loc[alpaca_sym].copy() if isinstance(df_all.index, pd.MultiIndex) else df_all.copy()
                     sym_df.index = pd.to_datetime(sym_df.index)
                     sym_df.index.name = "datetime"
                     sym_df.columns = [c.lower() for c in sym_df.columns]

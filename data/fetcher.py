@@ -46,6 +46,13 @@ def _parse_interval(interval: str) -> TimeFrame:
 
 RAW_COLS = ["open", "high", "low", "close", "volume", "trade_count", "vwap"]
 
+# Alpaca uses "/" for share classes (BRK/B); we store and expose them with "-" (BRK-B).
+def _to_alpaca(symbol: str) -> str:
+    return symbol.replace("-", "/")
+
+def _from_alpaca(symbol: str) -> str:
+    return symbol.replace("/", "-")
+
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -68,8 +75,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_raw(symbol: str, start: datetime, interval: str = "1h", end: datetime = None) -> pd.DataFrame:
+    alpaca_sym = _to_alpaca(symbol)
     request = StockBarsRequest(
-        symbol_or_symbols=symbol,
+        symbol_or_symbols=alpaca_sym,
         timeframe=_parse_interval(interval),
         start=start,
         end=end or datetime.now(),
@@ -77,7 +85,7 @@ def fetch_raw(symbol: str, start: datetime, interval: str = "1h", end: datetime 
     bars = _get_client().get_stock_bars(request)
     df = bars.df
     if isinstance(df.index, pd.MultiIndex):
-        df = df.loc[symbol]
+        df = df.loc[alpaca_sym]
     df.index = pd.to_datetime(df.index)
     df.index.name = "datetime"
     df.columns = [c.lower() for c in df.columns]
