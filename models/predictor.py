@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
-from lightgbm import LGBMRegressor
+from lightgbm import LGBMRanker
 
 
 class WalkForwardModel:
@@ -18,17 +18,18 @@ class WalkForwardModel:
         chunks = np.array_split(unique_dates, self.n_splits + 1)
 
         params = {
-            "objective":        "regression",
-            "metric":           "rmse",
-            "n_estimators":     300,
-            "learning_rate":    0.04,
-            "num_leaves":       31,
+            "objective":         "lambdarank",
+            "metric":            "ndcg",
+            "ndcg_eval_at":      [5, 10],
+            "n_estimators":      300,
+            "learning_rate":     0.04,
+            "num_leaves":        31,
             "min_child_samples": 50,
-            "feature_fraction": 0.8,
-            "bagging_fraction": 0.8,
-            "bagging_freq":     5,
-            "reg_lambda":       1.0,
-            "verbose":          -1,
+            "feature_fraction":  0.8,
+            "bagging_fraction":  0.8,
+            "bagging_freq":      5,
+            "reg_lambda":        1.0,
+            "verbose":           -1,
         }
 
         all_preds = []
@@ -41,16 +42,20 @@ class WalkForwardModel:
             train_mask = features_df.index.get_level_values("datetime").isin(train_dates)
             test_mask  = features_df.index.get_level_values("datetime").isin(test_dates)
 
-            train_df = features_df.loc[train_mask]
-            test_df  = features_df.loc[test_mask]
+            # Sort by datetime so group boundaries align with the group array
+            train_df = features_df.loc[train_mask].sort_index(level="datetime")
+            test_df  = features_df.loc[test_mask].sort_index(level="datetime")
 
             X_train = train_df[self._feature_names]
-            y_train = train_df["y"]
+            y_train = train_df["y"].astype(int)   # LambdaRank requires integer relevance
             X_test  = test_df[self._feature_names]
             y_test  = test_df["y"]
 
-            model = LGBMRegressor(**params)
-            model.fit(X_train, y_train)
+            # Number of stocks per timestamp — defines the ranking groups
+            train_group = train_df.groupby(level="datetime").size().values
+
+            model = LGBMRanker(**params)
+            model.fit(X_train, y_train, group=train_group)
 
             scores = model.predict(X_test)
 
@@ -81,9 +86,9 @@ class WalkForwardModel:
 
 if __name__ == "__main__":
     np.random.seed(42)
-    n_symbols   = 20
+    n_symbols    = 20
     n_timestamps = 500
-    n_features  = 14
+    n_features   = 14
 
     timestamps = pd.date_range("2020-01-01", periods=n_timestamps, freq="D")
     symbols    = [f"SYM{i:02d}" for i in range(n_symbols)]
